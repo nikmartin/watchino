@@ -1,3 +1,4 @@
+#include "Arduino_GFX.h"
 #include "HWCDC.h"
 #include "lv_conf.h"
 #include "lv_conf_internal.h"
@@ -6,16 +7,22 @@
 #include <Arduino_GFX_Library.h>
 #include <NimBLEDevice.h>
 #include <Wire.h>
+#include <cstdint>
 #include <lvgl.h>
+// Include the specific SensorLib header for your hardware RTC
+#include <SensorPCF85063.hpp>
 
-extern "C" {
+// --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon);
-}
 
 HWCDC USBSerial;
-
+SensorPCF85063 rtc; // SensorLib RTC driver instance
 #define SCREEN_WIDTH 410
 #define SCREEN_HEIGHT 502
+#define BYTE_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
+// 1/10th buffer strategy to preserve the ESP32-C6's internal 512KB SRAM
+#define BUF_SIZE (SCREEN_WIDTH * 40)
+
 // LVGL UI Objects
 lv_obj_t *time_label;
 
@@ -30,9 +37,13 @@ NimBLECharacteristic *pTxCharacteristic;
 bool deviceConnected = false;
 
 // Variables to hold parsed time
-int current_hour = 12;
-int current_minute = 00;
-int current_second = 00;
+uint16_t current_year = 2026;
+uint8_t current_month = 1;
+uint8_t current_date = 1;
+uint8_t current_hour = 12;
+uint8_t current_minute = 0;
+uint8_t current_second = 0;
+
 bool time_updated = false;
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
@@ -44,6 +55,35 @@ Arduino_GFX *gfx =
                        LCD_HEIGHT, 22 /* col_offset1 */, 0 /* row_offset1 */,
                        0 /* col_offset2 */, 0 /* row_offset2 */);
 
+
+// --- 1. Init Hardware RTC via SensorLib ---
+void init_hardware_rtc() {
+
+  // SensorLib initialization pattern
+  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL)) {
+    USBSerial.println("Error: SensorLib could not find PCF85063 chip!");
+    return;
+  }
+
+  // Start the clock internal oscillator circuit
+  rtc.start();
+  USBSerial.println("SensorLib RTC Initialized.");
+}
+
+void update_clock_ui_cb(lv_timer_t *timer) {
+  if (!time_label)
+    return;
+
+  // Grab time from hardware registers
+  RTC_DateTime now = rtc.getDateTime();
+
+  char time_str[12];
+  // Formats text cleanly to show Hours:Minutes:Seconds (e.g., 14:05:32)
+  snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", 
+            now.getHour(), now.getMinute(), now.getSecond());
+
+  lv_label_set_text(time_label, time_str);
+}
 // --- GADGETBRIDGE PARSER ---
 // Gadgetbridge sends commands like: "setTime(1717141200);" or raw time updates.
 // For a simple implementation, we look for time patterns or you can force
@@ -51,13 +91,30 @@ Arduino_GFX *gfx =
 void parse_gadgetbridge_data(String data) {
   // Basic structural parse for "setTime" or generic hourly updates
   if (data.indexOf("setTime") != -1) {
-    // Extract epoch or hours/minutes if your app variant passes text
-    // For demonstration, let's assume you've grabbed the hours/minutes:
-    // (Alternatively, use Gadgetbridge's fallback string format)
 
-    // Let's say you parse out the integers:
-    // current_hour = ...
-    // current_minute = ...
+    int startIdx = data.indexOf('(');
+    int endIdx = data.indexOf(')');
+    if (startIdx != -1 && endIdx != -1) {
+      String timestampStr = data.substring(startIdx + 1, endIdx);
+      time_t epoch = (time_t)timestampStr.toInt();
+
+      if (epoch > 0) {
+        // SensorLib uses standard time_t (UNIX seconds) directly for
+        // synchronization
+        struct tm *timeinfo = gmtime(&epoch);
+
+        current_year = timeinfo->tm_year + 1900;
+        current_month = timeinfo->tm_mon + 1; // tm_mon is 0-11
+        current_date = timeinfo->tm_mday;
+        current_hour = timeinfo->tm_hour;
+        current_minute = timeinfo->tm_min;
+        current_second = timeinfo->tm_sec;
+        rtc.setDateTime(current_year, current_month, current_date, current_hour,
+                        current_minute, current_second);
+
+        Serial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
+      }
+    }
     time_updated = true;
   }
 
@@ -79,24 +136,6 @@ void parse_gadgetbridge_data(String data) {
     time_updated = true;
   }
 }
-
-// --- LVGL UI INITIALIZATION ---
-void create_7segment_clock_ui() {
-  // 1. Create a label in the absolute middle of your 410x410 screen
-  time_label = lv_label_create(lv_screen_active());
-  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
-
-  // 2. Styling for a retro aesthetic
-  lv_obj_set_style_text_color(time_label, lv_color_hex(0x00FF00),
-                              LV_PART_MAIN); // Classic Green LED
-
-  // 3. Set a fallback font or your custom 7-segment font (See Step 2 below)
-  // For now, we use a large built-in font size
-  lv_obj_set_style_text_font(time_label, &tilt_neon, LV_PART_MAIN);
-
-  lv_label_set_text(time_label, "12:00:00");
-}
-
 // BLE Callback Class
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer) { deviceConnected = true; };
@@ -112,6 +151,23 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
     }
   }
 };
+
+// --- LVGL UI INITIALIZATION ---
+void create_clock_ui() {
+  // 1. Create a label in the absolute middle of your 410x502 screen
+  time_label = lv_label_create(lv_screen_active());
+  lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
+
+  // 2. Styling for a retro aesthetic
+  lv_obj_set_style_text_color(time_label, lv_color_hex(RGB565_LAWNGREEN),
+                              LV_PART_MAIN); // Classic Green LED
+
+  // 3. Set a fallback font or your custom 7-segment font (See Step 2 below)
+ 
+  lv_obj_set_style_text_font(time_label, &tilt_neon, LV_PART_MAIN);
+
+  lv_label_set_text(time_label, "12:00:00");
+}
 
 // 3. LVGL 9.5 Display Flush Callback using Arduino_GFX draw API
 void my_disp_flush(lv_display_t *display, const lv_area_t *area,
@@ -135,18 +191,19 @@ void setup() {
 #ifdef GFX_EXTRA_PRE_INIT
   GFX_EXTRA_PRE_INIT();
 #endif
-
+  // get i2c bus going
+  Wire.begin(IIC_SDA, IIC_SCL, 400000);
   // Init Display
   if (!gfx->begin()) {
     USBSerial.println("gfx->begin() failed!");
   }
-  gfx->fillScreen(RGB565_WHITE);
+  gfx->fillScreen(RGB565_BLACK);
   // Initialize core UI layout
   lv_init();
 
   // Allocate frame buffers (Dual buffering addresses QSPI tearing/flickering)
-  static uint8_t buf1[SCREEN_WIDTH * 40 * sizeof(lv_color_t)];
-  static uint8_t buf2[SCREEN_WIDTH * 40 * sizeof(lv_color_t)];
+  static uint8_t buf1[BUF_SIZE * BYTE_PER_PIXEL];
+  static uint8_t buf2[BUF_SIZE * BYTE_PER_PIXEL];
 
   // Target API setup for LVGL 9.5 display rendering engine
   lv_display_t *disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
@@ -155,8 +212,10 @@ void setup() {
   lv_display_set_flush_cb(disp, my_disp_flush);
 
   // (Your hardware display and LVGL setup code should run here)
-  create_7segment_clock_ui();
+  create_clock_ui();
 
+  // Poll the RTC every 500ms natively via LVGL's internal thread clock
+  lv_timer_create(update_clock_ui_cb, 500, NULL);
   // Initialize BLE
   NimBLEDevice::init("Bangle.js-C6"); // Name your device Bangle.js to trigger
                                       // the Gadgetbridge profile
@@ -172,7 +231,8 @@ void setup() {
       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   pRxCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
 
-  pService->start();
+  // pService->start();
+  //  pServer->start();
   pServer->getAdvertising()->addServiceUUID(SERVICE_UUID);
   pServer->getAdvertising()->start();
 
@@ -183,7 +243,7 @@ void setup() {
 void loop() {
 
   lv_timer_handler(); // Keep LVGL spinning
-  
+
   // Update the UI if Gadgetbridge updated our variables
   if (time_updated) {
     char time_str[6];
