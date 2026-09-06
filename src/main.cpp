@@ -12,8 +12,10 @@
 #include <SensorPCF85063.hpp>
 
 // --custom lvgl font from Google Fonts--
-LV_FONT_DECLARE(tilt_neon);
-LV_FONT_DECLARE(michroma);
+LV_FONT_DECLARE(tilt_neon_28);
+LV_FONT_DECLARE(michroma_28);
+LV_FONT_DECLARE(seven_segment_28);
+LV_FONT_DECLARE(seven_segment_48);
 
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
@@ -162,9 +164,9 @@ void create_clock_ui() {
   lv_obj_set_style_text_color(time_label, lv_color_hex(RGB565_LAWNGREEN),
                               LV_PART_MAIN); // Classic Green LED
 
-  // 3. Set a fallback font or your custom 7-segment font (See Step 2 below)
+  // 3. Set a custom font
  
-  lv_obj_set_style_text_font(time_label, &michroma, LV_PART_MAIN);
+  lv_obj_set_style_text_font(time_label, &seven_segment_48, LV_PART_MAIN);
 
   lv_label_set_text(time_label, "12:00:00");
 }

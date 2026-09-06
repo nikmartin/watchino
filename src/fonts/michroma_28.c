@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 28 px
  * Bpp: 1
- * Opts: --bpp 1 --size 28 --no-compress --stride 1 --align 1 --font Michroma-Regular.ttf --symbols 0123456789: --format lvgl -o michroma.c
+ * Opts: --bpp 1 --size 28 --no-compress --stride 1 --align 1 --font Michroma-Regular.ttf --symbols 0123456789:- --format lvgl -o michroma_28.c
  ******************************************************************************/
 
 #ifdef __has_include
@@ -20,11 +20,11 @@
 
 
 
-#ifndef MICHROMA
-#define MICHROMA 1
+#ifndef MICHROMA_28
+#define MICHROMA_28 1
 #endif
 
-#if MICHROMA
+#if MICHROMA_28
 
 /*-----------------
  *    BITMAPS
@@ -32,6 +32,9 @@
 
 /*Store the image of the glyphs*/
 static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {
+    /* U+002D "-" */
+    0xff, 0xff, 0xfc,
+
     /* U+0030 "0" */
     0xf, 0xff, 0xe0, 0x7f, 0xff, 0xf1, 0xe0, 0x0,
     0xf3, 0x80, 0x0, 0xef, 0x0, 0x1, 0xdc, 0x0,
@@ -142,31 +145,35 @@ static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {
 
 static const lv_font_fmt_txt_glyph_dsc_t glyph_dsc[] = {
     {.bitmap_index = 0, .adv_w = 0, .box_w = 0, .box_h = 0, .ofs_x = 0, .ofs_y = 0} /* id = 0 reserved */,
-    {.bitmap_index = 0, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 61, .adv_w = 426, .box_w = 18, .box_h = 21, .ofs_x = 5, .ofs_y = 0},
-    {.bitmap_index = 109, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 170, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 231, .adv_w = 448, .box_w = 25, .box_h = 21, .ofs_x = 1, .ofs_y = 0},
-    {.bitmap_index = 297, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 358, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 419, .adv_w = 434, .box_w = 24, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 482, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 543, .adv_w = 434, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
-    {.bitmap_index = 604, .adv_w = 98, .box_w = 3, .box_h = 10, .ofs_x = 2, .ofs_y = 3}
+    {.bitmap_index = 0, .adv_w = 224, .box_w = 11, .box_h = 2, .ofs_x = 2, .ofs_y = 7},
+    {.bitmap_index = 3, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 64, .adv_w = 426, .box_w = 18, .box_h = 21, .ofs_x = 5, .ofs_y = 0},
+    {.bitmap_index = 112, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 173, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 234, .adv_w = 448, .box_w = 25, .box_h = 21, .ofs_x = 1, .ofs_y = 0},
+    {.bitmap_index = 300, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 361, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 422, .adv_w = 434, .box_w = 24, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 485, .adv_w = 426, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 546, .adv_w = 434, .box_w = 23, .box_h = 21, .ofs_x = 2, .ofs_y = 0},
+    {.bitmap_index = 607, .adv_w = 98, .box_w = 3, .box_h = 10, .ofs_x = 2, .ofs_y = 3}
 };
 
 /*---------------------
  *  CHARACTER MAPPING
  *--------------------*/
 
-
+static const uint8_t glyph_id_ofs_list_0[] = {
+    0, 0, 0, 1, 2, 3, 4, 5,
+    6, 7, 8, 9, 10, 11
+};
 
 /*Collect the unicode lists and glyph_id offsets*/
 static const lv_font_fmt_txt_cmap_t cmaps[] =
 {
     {
-        .range_start = 48, .range_length = 11, .glyph_id_start = 1,
-        .unicode_list = NULL, .glyph_id_ofs_list = NULL, .list_length = 0, .type = LV_FONT_FMT_TXT_CMAP_FORMAT0_TINY
+        .range_start = 45, .range_length = 14, .glyph_id_start = 1,
+        .unicode_list = NULL, .glyph_id_ofs_list = glyph_id_ofs_list_0, .list_length = 14, .type = LV_FONT_FMT_TXT_CMAP_FORMAT0_FULL
     }
 };
 
@@ -201,6 +208,7 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 
 };
 
+extern const lv_font_t lv_font_montserrat_28;
 
 
 /*-----------------
@@ -209,9 +217,9 @@ static lv_font_fmt_txt_dsc_t font_dsc = {
 
 /*Initialize a public general font descriptor*/
 #if LVGL_VERSION_MAJOR >= 8
-const lv_font_t michroma = {
+const lv_font_t michroma_28 = {
 #else
-lv_font_t michroma = {
+lv_font_t michroma_28 = {
 #endif
     .get_glyph_dsc = lv_font_get_glyph_dsc_fmt_txt,    /*Function pointer to get glyph's data*/
     .get_glyph_bitmap = lv_font_get_bitmap_fmt_txt,    /*Function pointer to get glyph's bitmap*/
@@ -227,11 +235,11 @@ lv_font_t michroma = {
     .static_bitmap = 0,
     .dsc = &font_dsc,          /*The custom font data. Will be accessed by `get_glyph_bitmap/dsc` */
 #if LV_VERSION_CHECK(8, 2, 0) || LVGL_VERSION_MAJOR >= 9
-    .fallback = NULL,
+    .fallback = &lv_font_montserrat_28,
 #endif
     .user_data = NULL,
 };
 
 
 
-#endif /*#if MICHROMA*/
+#endif /*#if MICHROMA_28*/
