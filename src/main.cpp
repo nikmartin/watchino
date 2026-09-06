@@ -1,7 +1,6 @@
 #include "Arduino_GFX.h"
 #include "HWCDC.h"
 #include "lv_conf.h"
-#include "lv_conf_internal.h"
 #include "pin_config.h"
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
@@ -14,6 +13,7 @@
 
 // --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon);
+LV_FONT_DECLARE(michroma);
 
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
@@ -164,7 +164,7 @@ void create_clock_ui() {
 
   // 3. Set a fallback font or your custom 7-segment font (See Step 2 below)
  
-  lv_obj_set_style_text_font(time_label, &tilt_neon, LV_PART_MAIN);
+  lv_obj_set_style_text_font(time_label, &michroma, LV_PART_MAIN);
 
   lv_label_set_text(time_label, "12:00:00");
 }
