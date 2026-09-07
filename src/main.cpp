@@ -17,6 +17,19 @@ LV_FONT_DECLARE(michroma_28);
 LV_FONT_DECLARE(seven_segment_28);
 LV_FONT_DECLARE(seven_segment_48);
 
+// IMU parameter and config
+#define QMI8658_ADDR  0x6B // Default I2C address for QMI8658 (or 0x6A on some boards)
+// Selected QMI8658 Internal Register Map
+#define REG_WHO_AM_I      0x00
+#define REG_CTRL1         0x02 // Serial Interface and Sensor Enable
+#define REG_CTRL2         0x03 // Accelerometer Setup (ODR, Scale)
+#define REG_CTRL7         0x08 // Direction & Signal Engine Control
+#define REG_CTRL8         0x09 // Advanced Functional Configuration 
+#define REG_CAL_STEP_L    0x4D // Hardware Step Count Output (Low Byte)
+#define REG_CAL_STEP_H    0x4E // Hardware Step Count Output (High Byte)
+uint16_t step_counter = 0;
+
+
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
 #define SCREEN_WIDTH 410
@@ -184,17 +197,41 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area,
   lv_display_flush_ready(display);
 }
 
+// Helper function to write to QMI8658 registers
+void writeRegister(uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(QMI8658_ADDR);
+    Wire.write(reg);
+    Wire.write(value);
+    Wire.endTransmission();
+    delay(5); // Small settling delay
+}
+
+// Helper function to read from QMI8658 registers
+uint8_t readRegister(uint8_t reg) {
+    Wire.beginTransmission(QMI8658_ADDR);
+    Wire.write(reg);
+    Wire.endTransmission(false);
+    Wire.requestFrom(QMI8658_ADDR, (uint8_t)1);
+    if (Wire.available()) {
+        return Wire.read();
+    }
+    return 0;
+}
+
 void setup() {
   USBSerial.begin(115200);
-  // USBSerial.setDebugOutput(true);
-  // while(!USBSerial);
-  USBSerial.println("Arduino_GFX Hello World example");
+  USBSerial.setDebugOutput(true);
+  while(!USBSerial);
+  USBSerial.println("Arduino Smart Watch");
+
+   // get i2c bus going
+  Wire.begin(IIC_SDA, IIC_SCL, 400000);
 
 #ifdef GFX_EXTRA_PRE_INIT
   GFX_EXTRA_PRE_INIT();
 #endif
-  // get i2c bus going
-  Wire.begin(IIC_SDA, IIC_SCL, 400000);
+
+  
   // Init Display
   if (!gfx->begin()) {
     USBSerial.println("gfx->begin() failed!");
@@ -239,7 +276,35 @@ void setup() {
   pServer->getAdvertising()->start();
 
   Serial.println("BLE Watch Ready for Gadgetbridge Pairing...");
-  delay(2000); // 2 seconds
+
+  // 2. Verify the IMU connection
+  uint8_t chipID = readRegister(REG_WHO_AM_I);
+  Serial.print("QMI8658 Chip ID: 0x");
+  Serial.println(chipID, HEX);
+  
+  if (chipID != 0x05 && chipID != 0x80) { // Common QMI variants IDs
+      Serial.println("Warning: QMI8658 identity mismatch. Check I2C address.");
+  }
+
+  // Configure Accelerometer
+  // CTRL2: Set Accelerometer to 50Hz ODR (best for movement tracking) and ±2G Range
+  // 0x03 -> 50Hz ODR, ±2G Full Scale
+  writeRegister(REG_CTRL2, 0x03);
+
+  //  Enable Accelerometer sensor
+  // CTRL7: Bit 0 enables Accelerometer. (0x01)
+  writeRegister(REG_CTRL7, 0x01);
+
+  // Configure & Turn on the On-Chip Pedometer Engine
+  // CTRL8: Advanced functions. Enbale Pedometer logic.
+  // Setting Bit 4 high tells the internal DSP to start running the step-matching state machine.
+  uint8_t ctrl8Val = readRegister(REG_CTRL8);
+  ctrl8Val |= (1 << 4); // Enable pedometer bit
+  writeRegister(REG_CTRL8, ctrl8Val);
+
+  USBSerial.println("Hardware Pedometer engine actively tracking steps!");
+ 
+  delay(1000); // 1 seconds
 }
 
 void loop() {
@@ -256,5 +321,16 @@ void loop() {
     time_updated = false;
   }
 
-  delay(5);
+   //Read the 16-bit hardware step counter register
+  uint8_t stepL = readRegister(REG_CAL_STEP_L);
+  uint8_t stepH = readRegister(REG_CAL_STEP_H);
+    
+    // Combine Low and High Bytes
+  step_counter = (uint16_t)(stepH << 8) | stepL;
+
+    // Output to Serial (Ready for your LVGL display loop!)
+  USBSerial.print("Current Steps: ");
+  USBSerial.println(step_counter);
+
+  delay(1000);
 }
