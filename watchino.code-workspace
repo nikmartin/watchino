@@ -5,10 +5,6 @@
 		}
 	],
 	"settings": {
-		"clangd.path": "/home/nmartin/.platformio/packages/tool-clangd-esp/bin/clangd",
-		"clangd.arguments": [
-			"--compile-commands-dir=/home/nmartin/Projects/watchino/.cache/clangd",
-			"--query-driver=/home/nmartin/.platformio/packages/toolchain-*/bin/*,/home/nmartin/.platformio/packages/tool-*/bin/*"
-		]
+		"clangd.path": "/home/nmartin/.platformio/packages/tool-clangd-esp/bin/clangd"
 	}
 }

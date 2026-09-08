@@ -14,10 +14,10 @@ This watch doesn't do anything fancy yet, It essentially gets the time from my p
 
 ### Planned features
 
-* Use the 6 axis IMU to count steps
-* BLE connectivity to the OBD2 dongle in my vehicle
-* Connect to home automation to turn lights on and off
-* SMS and Email notifications
-* Power management (how long can I make the battery last?)
+- [ ] Use the 6 axis IMU to count steps (in progress)
+- [ ] BLE connectivity to the OBD2 dongle in my vehicle
+- [ ] Connect to home automation to turn lights on and off
+- [ ] SMS and Email notifications
+- [ ] Power management (how long can I make the battery last?)
 
 

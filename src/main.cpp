@@ -14,6 +14,10 @@ LV_FONT_DECLARE(tilt_neon_48_4bpp);
 LV_FONT_DECLARE(michroma_48_4bpp);
 LV_FONT_DECLARE(seven_segment_48_4bpp);
 
+// for stringifying compiler defines
+#define WATCHINO_STRINGIFY_VALUE(value) #value
+#define WATCHINO_STRINGIFY(value) WATCHINO_STRINGIFY_VALUE(value)
+
 // IMU parameter and config
 #define QMI8658_ADDR  0x6B // Default I2C address for QMI8658 (or 0x6A on some boards)
 // Selected QMI8658 Internal Register Map
@@ -214,11 +218,14 @@ uint8_t readRegister(uint8_t reg) {
     return 0;
 }
 
+
+
 void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
   while(!USBSerial);
-  USBSerial.println("Watchino Arduino Smart Watch v", APP_VERSION);
+  USBSerial.print("Watchino Arduino Smart Watch v");
+  USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
 
    // get i2c bus going
   Wire.begin(IIC_SDA, IIC_SCL, 400000);
