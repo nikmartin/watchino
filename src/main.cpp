@@ -1,6 +1,5 @@
 #include "Arduino_GFX.h"
 #include "HWCDC.h"
-#include "lv_conf.h"
 #include "pin_config.h"
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
@@ -8,14 +7,12 @@
 #include <Wire.h>
 #include <cstdint>
 #include <lvgl.h>
-// Include the specific SensorLib header for your hardware RTC
-#include <SensorPCF85063.hpp>
+#include <SensorPCF85063.hpp> //RTC
 
 // --custom lvgl font from Google Fonts--
-LV_FONT_DECLARE(tilt_neon_28);
-LV_FONT_DECLARE(michroma_28);
-LV_FONT_DECLARE(seven_segment_28);
-LV_FONT_DECLARE(seven_segment_48);
+LV_FONT_DECLARE(tilt_neon_48_4bpp);
+LV_FONT_DECLARE(michroma_48_4bpp);
+LV_FONT_DECLARE(seven_segment_48_4bpp);
 
 // IMU parameter and config
 #define QMI8658_ADDR  0x6B // Default I2C address for QMI8658 (or 0x6A on some boards)
@@ -32,11 +29,10 @@ uint16_t step_counter = 0;
 
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
-#define SCREEN_WIDTH 410
-#define SCREEN_HEIGHT 502
+
 #define BYTE_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
 // 1/10th buffer strategy to preserve the ESP32-C6's internal 512KB SRAM
-#define BUF_SIZE (SCREEN_WIDTH * 40)
+#define BUF_SIZE (LCD_WIDTH * 40)
 
 // LVGL UI Objects
 lv_obj_t *time_label;
@@ -127,7 +123,7 @@ void parse_gadgetbridge_data(String data) {
         rtc.setDateTime(current_year, current_month, current_date, current_hour,
                         current_minute, current_second);
 
-        Serial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
+        USBSerial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
       }
     }
     time_updated = true;
@@ -179,7 +175,7 @@ void create_clock_ui() {
 
   // 3. Set a custom font
  
-  lv_obj_set_style_text_font(time_label, &seven_segment_48, LV_PART_MAIN);
+  lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
 
   lv_label_set_text(time_label, "12:00:00");
 }
@@ -222,7 +218,7 @@ void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
   while(!USBSerial);
-  USBSerial.println("Arduino Smart Watch");
+  USBSerial.println("Watchino Arduino Smart Watch");
 
    // get i2c bus going
   Wire.begin(IIC_SDA, IIC_SCL, 400000);
@@ -245,7 +241,7 @@ void setup() {
   static uint8_t buf2[BUF_SIZE * BYTE_PER_PIXEL];
 
   // Target API setup for LVGL 9.5 display rendering engine
-  lv_display_t *disp = lv_display_create(SCREEN_WIDTH, SCREEN_HEIGHT);
+  lv_display_t *disp = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
   lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1),
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb(disp, my_disp_flush);
@@ -275,15 +271,15 @@ void setup() {
   pServer->getAdvertising()->addServiceUUID(SERVICE_UUID);
   pServer->getAdvertising()->start();
 
-  Serial.println("BLE Watch Ready for Gadgetbridge Pairing...");
+  USBSerial.println("BLE Watch Ready for Gadgetbridge Pairing...");
 
   // 2. Verify the IMU connection
   uint8_t chipID = readRegister(REG_WHO_AM_I);
-  Serial.print("QMI8658 Chip ID: 0x");
-  Serial.println(chipID, HEX);
+  USBSerial.print("QMI8658 Chip ID: 0x");
+  USBSerial.println(chipID, HEX);
   
   if (chipID != 0x05 && chipID != 0x80) { // Common QMI variants IDs
-      Serial.println("Warning: QMI8658 identity mismatch. Check I2C address.");
+      USBSerial.println("Warning: QMI8658 identity mismatch. Check I2C address.");
   }
 
   // Configure Accelerometer
