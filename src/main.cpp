@@ -218,7 +218,7 @@ void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
   while(!USBSerial);
-  USBSerial.println("Watchino Arduino Smart Watch");
+  USBSerial.println("Watchino Arduino Smart Watch v", APP_VERSION);
 
    // get i2c bus going
   Wire.begin(IIC_SDA, IIC_SCL, 400000);
