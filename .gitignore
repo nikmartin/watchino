@@ -6,3 +6,4 @@
 .cache/**/*
 compile_commands.json
 fonts/**/*
+watchino.code-workspace
