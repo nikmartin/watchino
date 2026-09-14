@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <lvgl.h>
 #include <SensorPCF85063.hpp> //RTC
+#include <SensorQMI8658.hpp> //IMU
 
 // --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon_48_4bpp);
@@ -19,16 +20,9 @@ LV_FONT_DECLARE(seven_segment_48_4bpp);
 #define WATCHINO_STRINGIFY(value) WATCHINO_STRINGIFY_VALUE(value)
 
 // IMU parameter and config
-#define QMI8658_ADDR  0x6B // Default I2C address for QMI8658 (or 0x6A on some boards)
-// Selected QMI8658 Internal Register Map
-#define REG_WHO_AM_I      0x00
-#define REG_CTRL1         0x02 // Serial Interface and Sensor Enable
-#define REG_CTRL2         0x03 // Accelerometer Setup (ODR, Scale)
-#define REG_CTRL7         0x08 // Direction & Signal Engine Control
-#define REG_CTRL8         0x09 // Advanced Functional Configuration 
-#define REG_CAL_STEP_L    0x4D // Hardware Step Count Output (Low Byte)
-#define REG_CAL_STEP_H    0x4E // Hardware Step Count Output (High Byte)
-uint16_t step_counter = 0;
+SensorQMI8658 qmi;
+uint32_t step_counter = 0;
+uint32_t last_step_counter = 0;
 
 
 HWCDC USBSerial;
@@ -40,6 +34,7 @@ SensorPCF85063 rtc; // SensorLib RTC driver instance
 
 // LVGL UI Objects
 lv_obj_t *time_label;
+lv_obj_t *step_label;
 
 // BLE Configuration
 #define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e" // NUS Service
@@ -105,6 +100,7 @@ void update_clock_ui_cb(lv_timer_t *timer) {
 // Gadgetbridge to send plain strings depending on your profile choice.
 void parse_gadgetbridge_data(String data) {
   // Basic structural parse for "setTime" or generic hourly updates
+  USBSerial.println("Parsing Gadgetbridge data: " + data);
   if (data.indexOf("setTime") != -1) {
 
     int startIdx = data.indexOf('(');
@@ -153,8 +149,14 @@ void parse_gadgetbridge_data(String data) {
 }
 // BLE Callback Class
 class MyServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *pServer) { deviceConnected = true; };
-  void onDisconnect(NimBLEServer *pServer) { deviceConnected = false; }
+  void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override {
+    deviceConnected = true;
+  }
+
+  void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo,
+                    int reason) override {
+    deviceConnected = false;
+  }
 };
 
 class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
@@ -169,17 +171,31 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
 // --- LVGL UI INITIALIZATION ---
 void create_clock_ui() {
+
+  //get the screen 
+  lv_obj_t *screen = lv_screen_active();
+
+  //setup the BG color
+  lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
+
   // Create a label in the absolute middle of 410x502 screen
-  time_label = lv_label_create(lv_screen_active());
+  time_label = lv_label_create(screen);
   lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
 
   // Styling for a retro aesthetic
-  lv_obj_set_style_text_color(time_label, lv_color_hex(RGB565_LIGHTGRAY), LV_PART_MAIN);
+  lv_color_t tomato_color = lv_color_hex(RGB16TO24(RGB565_TOMATO));
+  lv_obj_set_style_text_color(time_label, tomato_color, LV_PART_MAIN);
 
   // Set a custom font
    lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
   // set some dummy text
   lv_label_set_text(time_label, "12:00:00");
+
+  step_label = lv_label_create(screen);
+  lv_obj_align(step_label, LV_ALIGN_BOTTOM_MID, 0, -12);
+  lv_obj_set_style_text_color(step_label, lv_color_hex(0xD0D4D0), LV_PART_MAIN);
+  lv_label_set_text(step_label, "Steps: 0");
 }
 
 // 3. LVGL 9.5 Display Flush Callback using Arduino_GFX draw API
@@ -195,37 +211,12 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area,
   lv_display_flush_ready(display);
 }
 
-// Helper function to write to QMI8658 registers
-void writeRegister(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(QMI8658_ADDR);
-    Wire.write(reg);
-    Wire.write(value);
-    Wire.endTransmission();
-    delay(5); // Small settling delay
-}
-
-// Helper function to read from QMI8658 registers
-uint8_t readRegister(uint8_t reg) {
-    Wire.beginTransmission(QMI8658_ADDR);
-    Wire.write(reg);
-    Wire.endTransmission(false);
-    Wire.requestFrom(QMI8658_ADDR, (uint8_t)1);
-    if (Wire.available()) {
-        return Wire.read();
-    }
-    return 0;
-}
-
-
 void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
   while(!USBSerial);
   USBSerial.print("Watchino Arduino Smart Watch v");
   USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
-
-   // get i2c bus going
-  Wire.begin(IIC_SDA, IIC_SCL, 400000);
 
 #ifdef GFX_EXTRA_PRE_INIT
   GFX_EXTRA_PRE_INIT();
@@ -254,7 +245,7 @@ void setup() {
   // Poll the RTC every 500ms natively via LVGL's internal thread clock
   lv_timer_create(update_clock_ui_cb, 500, NULL);
   // Initialize BLE
-  NimBLEDevice::init("Bangle.js-C6"); // Name your device Bangle.js to trigger
+  NimBLEDevice::init("Bangle.js"); // Name your device Bangle.js to trigger
                                       // the Gadgetbridge profile
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
@@ -268,40 +259,42 @@ void setup() {
       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   pRxCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
 
-  // pService->start();
-  //  pServer->start();
+  //pService->start();
+  pServer->start();
   pServer->getAdvertising()->addServiceUUID(SERVICE_UUID);
   pServer->getAdvertising()->start();
 
   USBSerial.println("BLE Watch Ready for Gadgetbridge Pairing...");
 
-  // 2. Verify the IMU connection
-  uint8_t chipID = readRegister(REG_WHO_AM_I);
+  // Initialize and configure the QMI8658 through SensorLib.
+  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL)) {
+    USBSerial.println("Failed to find QMI8658 - check your wiring!");
+    while (true) {
+      delay(1000);
+    }
+  }
+  Wire.setClock(400000);
+
   USBSerial.print("QMI8658 Chip ID: 0x");
-  USBSerial.println(chipID, HEX);
-  
-  if (chipID != 0x05 && chipID != 0x80) { // Common QMI variants IDs
-      USBSerial.println("Warning: QMI8658 identity mismatch. Check I2C address.");
+  USBSerial.println(qmi.getChipID(), HEX);
+
+  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
+                          SensorQMI8658::ACC_ODR_125Hz,
+                          SensorQMI8658::LPF_MODE_0);
+  qmi.enableAccelerometer();
+
+  // Configure the detection thresholds before enabling the pedometer.
+  qmi.configPedometer(50, 200, 100, 200, 20, 1, 0, 1);
+  if (!qmi.enablePedometer()) {
+    USBSerial.println("Failed to enable QMI8658 pedometer!");
   }
 
-  // Configure Accelerometer
-  // CTRL2: Set Accelerometer to 50Hz ODR (best for movement tracking) and ±2G Range
-  // 0x03 -> 50Hz ODR, ±2G Full Scale
-  writeRegister(REG_CTRL2, 0x03);
-
-  //  Enable Accelerometer sensor
-  // CTRL7: Bit 0 enables Accelerometer. (0x01)
-  writeRegister(REG_CTRL7, 0x01);
-
-  // Configure & Turn on the On-Chip Pedometer Engine
-  // CTRL8: Advanced functions. Enbale Pedometer logic.
-  // Setting Bit 4 high tells the internal DSP to start running the step-matching state machine.
-  uint8_t ctrl8Val = readRegister(REG_CTRL8);
-  ctrl8Val |= (1 << 4); // Enable pedometer bit
-  writeRegister(REG_CTRL8, ctrl8Val);
 
   USBSerial.println("Hardware Pedometer engine actively tracking steps!");
  
+  // TODO: setup touch screen here
+
+
   delay(1000);
 }
 
@@ -319,16 +312,17 @@ void loop() {
     time_updated = false;
   }
 
-   //Read the 16-bit hardware step counter register
-  uint8_t stepL = readRegister(REG_CAL_STEP_L);
-  uint8_t stepH = readRegister(REG_CAL_STEP_H);
-    
-    // Combine Low and High Bytes
-  step_counter = (uint16_t)(stepH << 8) | stepL;
+  step_counter = qmi.getPedometerCounter();
+  if (step_counter != last_step_counter) {
+    char step_text[20];
+    snprintf(step_text, sizeof(step_text), "Steps: %lu",
+             static_cast<unsigned long>(step_counter));
+    lv_label_set_text(step_label, step_text);
 
-    // Output to Serial (Ready for your LVGL display loop!)
-  USBSerial.print("Current Steps: ");
-  USBSerial.println(step_counter);
+    USBSerial.print("Current Steps: ");
+    USBSerial.println(step_counter);
+    last_step_counter = step_counter;
+  }
 
   delay(1000);
 }
