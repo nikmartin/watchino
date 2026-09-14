@@ -169,18 +169,16 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 
 // --- LVGL UI INITIALIZATION ---
 void create_clock_ui() {
-  // 1. Create a label in the absolute middle of your 410x502 screen
+  // Create a label in the absolute middle of 410x502 screen
   time_label = lv_label_create(lv_screen_active());
   lv_obj_align(time_label, LV_ALIGN_CENTER, 0, 0);
 
-  // 2. Styling for a retro aesthetic
-  lv_obj_set_style_text_color(time_label, lv_color_hex(RGB565_LAWNGREEN),
-                              LV_PART_MAIN); // Classic Green LED
+  // Styling for a retro aesthetic
+  lv_obj_set_style_text_color(time_label, lv_color_hex(RGB565_LIGHTGRAY), LV_PART_MAIN);
 
-  // 3. Set a custom font
- 
-  lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
-
+  // Set a custom font
+   lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
+  // set some dummy text
   lv_label_set_text(time_label, "12:00:00");
 }
 
@@ -219,7 +217,6 @@ uint8_t readRegister(uint8_t reg) {
 }
 
 
-
 void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
@@ -234,7 +231,6 @@ void setup() {
   GFX_EXTRA_PRE_INIT();
 #endif
 
-  
   // Init Display
   if (!gfx->begin()) {
     USBSerial.println("gfx->begin() failed!");
@@ -253,7 +249,6 @@ void setup() {
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb(disp, my_disp_flush);
 
-  // (Your hardware display and LVGL setup code should run here)
   create_clock_ui();
 
   // Poll the RTC every 500ms natively via LVGL's internal thread clock
@@ -307,7 +302,7 @@ void setup() {
 
   USBSerial.println("Hardware Pedometer engine actively tracking steps!");
  
-  delay(1000); // 1 seconds
+  delay(1000);
 }
 
 void loop() {
