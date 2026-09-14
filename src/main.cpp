@@ -195,6 +195,7 @@ void create_clock_ui() {
   step_label = lv_label_create(screen);
   lv_obj_align(step_label, LV_ALIGN_BOTTOM_MID, 0, -12);
   lv_obj_set_style_text_color(step_label, lv_color_hex(0xD0D4D0), LV_PART_MAIN);
+  lv_obj_set_style_text_font(step_label, &lv_font_montserrat_28, LV_PART_MAIN);
   lv_label_set_text(step_label, "Steps: 0");
 }
 
