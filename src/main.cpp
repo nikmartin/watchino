@@ -1,14 +1,15 @@
 #include "Arduino_GFX.h"
 #include "HWCDC.h"
+#include "core/lv_obj_pos.h"
 #include "pin_config.h"
+#include "widgets/label/lv_label.h"
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <NimBLEDevice.h>
-#include <Wire.h>
-#include <cstdint>
-#include <lvgl.h>
 #include <SensorPCF85063.hpp> //RTC
-#include <SensorQMI8658.hpp> //IMU
+#include <SensorQMI8658.hpp>  //IMU
+#include <Wire.h>
+#include <lvgl.h>
 
 // --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon_48_4bpp);
@@ -24,7 +25,6 @@ SensorQMI8658 qmi;
 uint32_t step_counter = 0;
 uint32_t last_step_counter = 0;
 
-
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
 
@@ -37,11 +37,10 @@ lv_obj_t *time_label;
 lv_obj_t *step_label;
 
 // BLE Configuration
-#define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e" // NUS Service
-#define RX_CHARACTERISTIC_UUID                                                 \
-  "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // RX (Write)
-#define TX_CHARACTERISTIC_UUID                                                 \
-  "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // TX (Notify)
+
+#define SERVICE_UUID            "6e400001-b5a3-f393-e0a9-e50e24dcca9e" // NUS Service
+#define RX_CHARACTERISTIC_UUID  "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // RX (Write)
+#define TX_CHARACTERISTIC_UUID  "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // TX (Notify)
 
 NimBLECharacteristic *pTxCharacteristic;
 bool deviceConnected = false;
@@ -65,8 +64,7 @@ Arduino_GFX *gfx =
                        LCD_HEIGHT, 22 /* col_offset1 */, 0 /* row_offset1 */,
                        0 /* col_offset2 */, 0 /* row_offset2 */);
 
-
-// --- 1. Init Hardware RTC via SensorLib ---
+// Init Hardware RTC via SensorLib ---
 void init_hardware_rtc() {
 
   // SensorLib initialization pattern
@@ -74,7 +72,6 @@ void init_hardware_rtc() {
     USBSerial.println("Error: SensorLib could not find PCF85063 chip!");
     return;
   }
-
   // Start the clock internal oscillator circuit
   rtc.start();
   USBSerial.println("SensorLib RTC Initialized.");
@@ -89,8 +86,8 @@ void update_clock_ui_cb(lv_timer_t *timer) {
 
   char time_str[12];
   // Formats text cleanly to show Hours:Minutes:Seconds (e.g., 14:05:32)
-  snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", 
-            now.getHour(), now.getMinute(), now.getSecond());
+  snprintf(time_str, sizeof(time_str), "%02d:%02d:%02d", now.getHour(),
+           now.getMinute(), now.getSecond());
 
   lv_label_set_text(time_label, time_str);
 }
@@ -151,17 +148,27 @@ void parse_gadgetbridge_data(String data) {
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override {
     deviceConnected = true;
+    USBSerial.println("Gadgetbridge connected!");
   }
 
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo,
                     int reason) override {
     deviceConnected = false;
+    USBSerial.println("Gadgetbridge disconnected!");
+    NimBLEDevice::startAdvertising();
   }
 };
 
 class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic) {
     std::string rxValue = pCharacteristic->getValue();
+
+    USBSerial.print("RX Data: ");
+    for (int i = 0; i < rxValue.length(); i++) {
+      USBSerial.printf("%02X ", rxValue[i]);
+    }
+    USBSerial.println();
+
     if (rxValue.length() > 0) {
       String data = String(rxValue.c_str());
       parse_gadgetbridge_data(data);
@@ -172,10 +179,10 @@ class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 // --- LVGL UI INITIALIZATION ---
 void create_clock_ui() {
 
-  //get the screen 
+  // get the screen
   lv_obj_t *screen = lv_screen_active();
 
-  //setup the BG color
+  // setup the BG color
   lv_obj_set_style_bg_color(screen, lv_color_hex(0x000000), LV_PART_MAIN);
   lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
 
@@ -188,7 +195,7 @@ void create_clock_ui() {
   lv_obj_set_style_text_color(time_label, tomato_color, LV_PART_MAIN);
 
   // Set a custom font
-   lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
+  lv_obj_set_style_text_font(time_label, &michroma_48_4bpp, LV_PART_MAIN);
   // set some dummy text
   lv_label_set_text(time_label, "12:00:00");
 
@@ -212,10 +219,37 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area,
   lv_display_flush_ready(display);
 }
 
+bool detectStep(const IMUdata data) {
+  static float last_accel = 0;
+  static unsigned long last_time = 0;
+  const unsigned long debounce_time = 200; // Debounce for 200 ms
+
+  float accel_magnitude =
+      sqrt(data.x * data.x + data.y * data.y + data.z * data.z);
+  float threshold = 1.0; // Adjust based on trial and testing
+
+  // Print the acceleration magnitude for debugging
+  //USBSerial.print("Accel Magnitude: ");
+  //USBSerial.println(accel_magnitude);
+
+  // Step detection with debouncing
+  if (accel_magnitude > threshold && last_accel <= threshold &&
+      (millis() - last_time > debounce_time)) {
+    last_accel = accel_magnitude;
+    last_time = millis();
+    return true; // Step detected
+  }
+
+  last_accel = accel_magnitude;
+  return false; // No step detected
+}
+
 void setup() {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
-  while(!USBSerial);
+  while (!USBSerial) {
+    ;
+  }
   USBSerial.print("Watchino Arduino Smart Watch v");
   USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
 
@@ -246,8 +280,8 @@ void setup() {
   // Poll the RTC every 500ms natively via LVGL's internal thread clock
   lv_timer_create(update_clock_ui_cb, 500, NULL);
   // Initialize BLE
-  NimBLEDevice::init("Bangle.js"); // Name your device Bangle.js to trigger
-                                      // the Gadgetbridge profile
+  NimBLEDevice::init("Bangle.js C6"); // Name your device Bangle.js to trigger
+                                   // the Gadgetbridge profile
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
@@ -260,9 +294,10 @@ void setup() {
       NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   pRxCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
 
-  //pService->start();
   pServer->start();
-  pServer->getAdvertising()->addServiceUUID(SERVICE_UUID);
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->enableScanResponse(true);
   pServer->getAdvertising()->start();
 
   USBSerial.println("BLE Watch Ready for Gadgetbridge Pairing...");
@@ -279,22 +314,14 @@ void setup() {
   USBSerial.print("QMI8658 Chip ID: 0x");
   USBSerial.println(qmi.getChipID(), HEX);
 
-  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_4G,
-                          SensorQMI8658::ACC_ODR_125Hz,
+  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_2G,
+                          SensorQMI8658::ACC_ODR_62_5Hz,
                           SensorQMI8658::LPF_MODE_0);
+
   qmi.enableAccelerometer();
+  USBSerial.println("Hardware Accelerometer engine enabled");
 
-  // Configure the detection thresholds before enabling the pedometer.
-  qmi.configPedometer(50, 200, 100, 200, 20, 1, 0, 1);
-  if (!qmi.enablePedometer()) {
-    USBSerial.println("Failed to enable QMI8658 pedometer!");
-  }
-
-
-  USBSerial.println("Hardware Pedometer engine actively tracking steps!");
- 
   // TODO: setup touch screen here
-
 
   delay(1000);
 }
@@ -303,27 +330,27 @@ void loop() {
 
   lv_timer_handler(); // Keep LVGL spinning
 
-  // Update the UI if Gadgetbridge updated our variables
-  if (time_updated) {
-    char time_str[6];
-    snprintf(time_str, sizeof(time_str), "%02d:%02d", current_hour,
-             current_minute);
 
-    lv_label_set_text(time_label, time_str);
-    time_updated = false;
+  if (qmi.getDataReady()) {
+    IMUdata accel;
+    if (qmi.getAccelerometer(accel.x, accel.y, accel.z)) {
+      // USBSerial.printf("Accel: %.2f, %.2f, %.2f\n", accel.x, accel.y, accel.z);
+    
+    if (detectStep(accel)) {
+      USBSerial.println("Step Detected");
+      step_counter++;
+      USBSerial.print("Steps: ");
+      USBSerial.println(step_counter);
+    }
+  }
+    if (step_counter != last_step_counter) {
+      char step_str[16];
+      snprintf(step_str, sizeof(step_str), "Steps: %d", step_counter);
+      lv_label_set_text(step_label, step_str);
+      lv_obj_invalidate(step_label);
+      last_step_counter = step_counter;
+    }
   }
 
-  step_counter = qmi.getPedometerCounter();
-  if (step_counter != last_step_counter) {
-    char step_text[20];
-    snprintf(step_text, sizeof(step_text), "Steps: %lu",
-             static_cast<unsigned long>(step_counter));
-    lv_label_set_text(step_label, step_text);
-
-    USBSerial.print("Current Steps: ");
-    USBSerial.println(step_counter);
-    last_step_counter = step_counter;
-  }
-
-  delay(1000);
+  delay(500);
 }
