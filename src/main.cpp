@@ -465,5 +465,6 @@ void loop()
     }
   }
   lv_timer_handler(); // Keep LVGL spinning
-  delay(16);
+  //16 = 62.5 Hz
+  delay(32);
 }
