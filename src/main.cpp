@@ -1,8 +1,6 @@
 #include "Arduino_GFX.h"
 #include "HWCDC.h"
-#include "core/lv_obj_pos.h"
 #include "pin_config.h"
-#include "widgets/label/lv_label.h"
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <NimBLEDevice.h>
@@ -10,6 +8,7 @@
 #include <SensorQMI8658.hpp>  //IMU
 #include <Wire.h>
 #include <lvgl.h>
+#include <ArduinoJson.h>
 
 // --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon_48_4bpp);
@@ -23,27 +22,26 @@ LV_FONT_DECLARE(seven_segment_48_4bpp);
 // IMU parameter and config
 SensorQMI8658 qmi;
 uint32_t step_counter = 0;
-uint32_t last_step_counter = 0;
 
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
 
 #define BYTE_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
-// 1/10th buffer strategy to preserve the ESP32-C6's internal 512KB SRAM
-#define BUF_SIZE (LCD_WIDTH * 40)
+#define BUF_SIZE (LCD_WIDTH * 80)
 
 // LVGL UI Objects
 lv_obj_t *time_label;
 lv_obj_t *step_label;
 
 // BLE Configuration
-
-#define SERVICE_UUID            "6e400001-b5a3-f393-e0a9-e50e24dcca9e" // NUS Service
-#define RX_CHARACTERISTIC_UUID  "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // RX (Write)
-#define TX_CHARACTERISTIC_UUID  "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // TX (Notify)
+#define SERVICE_UUID "6e400001-b5a3-f393-e0a9-e50e24dcca9e"           // NUS Service
+#define RX_CHARACTERISTIC_UUID "6e400002-b5a3-f393-e0a9-e50e24dcca9e" // RX (Write)
+#define TX_CHARACTERISTIC_UUID "6e400003-b5a3-f393-e0a9-e50e24dcca9e" // TX (Notify)
+#define DEVICE_NAME "Bangle.js C6"
 
 NimBLECharacteristic *pTxCharacteristic;
 bool deviceConnected = false;
+String gadgetbridge_buffer;
 
 // Variables to hold parsed time
 uint16_t current_year = 2026;
@@ -55,6 +53,7 @@ uint8_t current_second = 0;
 
 bool time_updated = false;
 
+// Graphics bus and display initialization
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
     LCD_CS /* CS */, LCD_SCLK /* SCK */, LCD_SDIO0 /* SDIO0 */,
     LCD_SDIO1 /* SDIO1 */, LCD_SDIO2 /* SDIO2 */, LCD_SDIO3 /* SDIO3 */);
@@ -65,10 +64,12 @@ Arduino_GFX *gfx =
                        0 /* col_offset2 */, 0 /* row_offset2 */);
 
 // Init Hardware RTC via SensorLib ---
-void init_hardware_rtc() {
+void init_hardware_rtc()
+{
 
   // SensorLib initialization pattern
-  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL)) {
+  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL))
+  {
     USBSerial.println("Error: SensorLib could not find PCF85063 chip!");
     return;
   }
@@ -77,7 +78,8 @@ void init_hardware_rtc() {
   USBSerial.println("SensorLib RTC Initialized.");
 }
 
-void update_clock_ui_cb(lv_timer_t *timer) {
+void update_clock_ui_cb(lv_timer_t *timer)
+{
   if (!time_label)
     return;
 
@@ -92,92 +94,211 @@ void update_clock_ui_cb(lv_timer_t *timer) {
   lv_label_set_text(time_label, time_str);
 }
 // --- GADGETBRIDGE PARSER ---
-// Gadgetbridge sends commands like: "setTime(1717141200);" or raw time updates.
-// For a simple implementation, we look for time patterns or you can force
-// Gadgetbridge to send plain strings depending on your profile choice.
-void parse_gadgetbridge_data(String data) {
-  // Basic structural parse for "setTime" or generic hourly updates
-  USBSerial.println("Parsing Gadgetbridge data: " + data);
-  if (data.indexOf("setTime") != -1) {
+void parse_gadgetbridge_json(const String &json_text)
+{
+  JsonDocument document;
+  USBSerial.print("Parsing Gadgetbridge JSON: ");
+  USBSerial.println(json_text);
 
-    int startIdx = data.indexOf('(');
-    int endIdx = data.indexOf(')');
-    if (startIdx != -1 && endIdx != -1) {
-      String timestampStr = data.substring(startIdx + 1, endIdx);
-      time_t epoch = (time_t)timestampStr.toInt();
+  DeserializationError error = deserializeJson(document, json_text);
+  if (error)
+  {
+    USBSerial.print("Gadgetbridge JSON parse failed: ");
+    USBSerial.println(error.c_str());
+    return;
+  }
 
-      if (epoch > 0) {
-        // SensorLib uses standard time_t (UNIX seconds) directly for
-        // synchronization
-        struct tm *timeinfo = gmtime(&epoch);
+  USBSerial.print("Parsed Gadgetbridge JSON: ");
+  serializeJson(document, USBSerial);
+  USBSerial.println();
 
-        current_year = timeinfo->tm_year + 1900;
-        current_month = timeinfo->tm_mon + 1; // tm_mon is 0-11
-        current_date = timeinfo->tm_mday;
-        current_hour = timeinfo->tm_hour;
-        current_minute = timeinfo->tm_min;
-        current_second = timeinfo->tm_sec;
-        rtc.setDateTime(current_year, current_month, current_date, current_hour,
-                        current_minute, current_second);
+  const char *command = document["cmd"] | document["command"] | document["t"] | "";
+  JsonVariantConst timestamp_value = document["timestamp"];
+  if (timestamp_value.isNull())
+    timestamp_value = document["time"];
 
-        USBSerial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
+  USBSerial.print("Gadgetbridge command: ");
+  USBSerial.println(command);
+
+  if (strcmp(command, "setTime") != 0 && strcmp(command, "time") != 0)
+    return;
+
+  time_t epoch = timestamp_value | 0;
+  if (epoch <= 0)
+  {
+    USBSerial.println("Gadgetbridge JSON has no valid timestamp");
+    return;
+  }
+
+  struct tm *timeinfo = gmtime(&epoch);
+  if (!timeinfo)
+  {
+    USBSerial.println("Unable to convert Gadgetbridge timestamp");
+    return;
+  }
+
+  current_year = timeinfo->tm_year + 1900;
+  current_month = timeinfo->tm_mon + 1;
+  current_date = timeinfo->tm_mday;
+  current_hour = timeinfo->tm_hour;
+  current_minute = timeinfo->tm_min;
+  current_second = timeinfo->tm_sec;
+  rtc.setDateTime(current_year, current_month, current_date, current_hour,
+                  current_minute, current_second);
+  time_updated = true;
+  USBSerial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
+}
+
+void process_gadgetbridge_bytes(const std::string &fragment)
+{
+  for (unsigned char byte : fragment)
+    gadgetbridge_buffer += static_cast<char>(byte);
+
+  while (true)
+  {
+    int start = gadgetbridge_buffer.indexOf("GB(");
+    if (start < 0)
+    {
+      gadgetbridge_buffer = "";
+      return;
+    }
+
+    if (start > 0)
+      gadgetbridge_buffer.remove(0, start);
+
+    int depth = 0;
+    bool inside_string = false;
+    bool escaped = false;
+    int closing_index = -1;
+
+    for (int index = 3; index < gadgetbridge_buffer.length(); ++index)
+    {
+      char character = gadgetbridge_buffer[index];
+      if (escaped)
+      {
+        escaped = false;
+        continue;
+      }
+      if (character == '\\' && inside_string)
+      {
+        escaped = true;
+        continue;
+      }
+      if (character == '"')
+      {
+        inside_string = !inside_string;
+        continue;
+      }
+      if (inside_string)
+        continue;
+
+      if (character == '{')
+        ++depth;
+      else if (character == '}' && --depth == 0)
+      {
+        if (index + 1 < gadgetbridge_buffer.length() &&
+            gadgetbridge_buffer[index + 1] == ')')
+        {
+          closing_index = index;
+          break;
+        }
       }
     }
-    time_updated = true;
-  }
 
-  // Fallback: If Gadgetbridge passes a raw system string via notification test
-  // or sync lines containing "HH:MM"
-  int colonIndex = data.indexOf(':');
-  // Extract seconds if present after a second colon
-  int secondColonIndex = data.indexOf(':', colonIndex + 1);
-  if (secondColonIndex != -1) {
-    String sStr = data.substring(secondColonIndex + 1, secondColonIndex + 3);
-    current_second = sStr.toInt();
-  }
-  if (colonIndex > 0 && colonIndex < data.length() - 1) {
-    String hStr = data.substring(colonIndex - 2, colonIndex);
-    String mStr = data.substring(colonIndex + 1, colonIndex + 3);
+    if (closing_index < 0)
+      return;
 
-    current_hour = hStr.toInt();
-    current_minute = mStr.toInt();
-    time_updated = true;
+    String json_text = gadgetbridge_buffer.substring(3, closing_index + 1);
+    parse_gadgetbridge_json(json_text);
+    gadgetbridge_buffer.remove(0, closing_index + 2);
   }
 }
 // BLE Callback Class
-class MyServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override {
+class MyServerCallbacks : public NimBLEServerCallbacks
+{
+  void onConnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo) override
+  {
     deviceConnected = true;
     USBSerial.println("Gadgetbridge connected!");
   }
 
   void onDisconnect(NimBLEServer *pServer, NimBLEConnInfo &connInfo,
-                    int reason) override {
+                    int reason) override
+  {
     deviceConnected = false;
     USBSerial.println("Gadgetbridge disconnected!");
     NimBLEDevice::startAdvertising();
   }
 };
 
-class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic *pCharacteristic) {
+class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks
+{
+  void onWrite(NimBLECharacteristic *pCharacteristic,
+               NimBLEConnInfo &connInfo) override
+  {
+    // USBSerial.println("onWrite callback entered");
     std::string rxValue = pCharacteristic->getValue();
+    // USBSerial.print("Write received on UUID: ");
+    // USBSerial.println(pCharacteristic->getUUID().toString().c_str());
 
-    USBSerial.print("RX Data: ");
-    for (int i = 0; i < rxValue.length(); i++) {
-      USBSerial.printf("%02X ", rxValue[i]);
-    }
-    USBSerial.println();
-
-    if (rxValue.length() > 0) {
-      String data = String(rxValue.c_str());
-      parse_gadgetbridge_data(data);
-    }
+    process_gadgetbridge_bytes(rxValue);
   }
 };
 
+bool detectStep(const IMUdata data)
+{
+  static float gravity_magnitude = 1.0f;
+  static float last_dynamic_accel = 0.0f;
+  static unsigned long last_step_time = 0;
+  const unsigned long minimum_step_interval = 300;
+  const float movement_threshold = 0.22f;
+
+  float accel_magnitude = sqrt(data.x * data.x + data.y * data.y + data.z * data.z);
+  gravity_magnitude = (gravity_magnitude * 0.95f) + (accel_magnitude * 0.05f);
+  float dynamic_accel = accel_magnitude - gravity_magnitude;
+
+  // Print the acceleration magnitude for debugging
+  // USBSerial.printf("Magnitude: %.2f Dynamic: %.2f Z: %.2f\n",
+  //                  accel_magnitude, dynamic_accel, data.z);
+
+  if (dynamic_accel > movement_threshold &&
+      last_dynamic_accel <= movement_threshold &&
+      millis() - last_step_time >= minimum_step_interval)
+  {
+    last_dynamic_accel = dynamic_accel;
+    last_step_time = millis();
+    return true; // Step detected
+  }
+
+  last_dynamic_accel = dynamic_accel;
+  return false; // No step detected
+}
+void init_step_counter()
+{
+  // Initialize and configure the QMI8658 through SensorLib.
+  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
+  {
+    USBSerial.println("Failed to find QMI8658 - check your wiring!");
+    while (true)
+    {
+      delay(1000);
+    }
+  }
+  Wire.setClock(400000);
+
+  USBSerial.print("QMI8658 Chip ID: 0x");
+  USBSerial.println(qmi.getChipID(), HEX);
+
+  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_2G,
+                          SensorQMI8658::ACC_ODR_62_5Hz,
+                          SensorQMI8658::LPF_MODE_0);
+
+  qmi.enableAccelerometer();
+  USBSerial.println("Hardware Accelerometer engine enabled");
+}
 // --- LVGL UI INITIALIZATION ---
-void create_clock_ui() {
+void create_clock_ui()
+{
 
   // get the screen
   lv_obj_t *screen = lv_screen_active();
@@ -206,11 +327,13 @@ void create_clock_ui() {
   lv_label_set_text(step_label, "Steps: 0");
 }
 
-// 3. LVGL 9.5 Display Flush Callback using Arduino_GFX draw API
+// LVGL 9.5 Display Flush Callback using Arduino_GFX draw API
+
 void my_disp_flush(lv_display_t *display, const lv_area_t *area,
-                   uint8_t *px_map) {
-  uint32_t w = (area->x2 - area->x1 + 1);
-  uint32_t h = (area->y2 - area->y1 + 1);
+                   uint8_t *px_map)
+{
+  int32_t w = (area->x2 - area->x1 + 1);
+  int32_t h = (area->y2 - area->y1 + 1);
 
   // Push the native LVGL 16-bit RGB pixels via standard Arduino_GFX DMA burst
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)px_map, w, h);
@@ -219,68 +342,10 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area,
   lv_display_flush_ready(display);
 }
 
-bool detectStep(const IMUdata data) {
-  static float last_accel = 0;
-  static unsigned long last_time = 0;
-  const unsigned long debounce_time = 200; // Debounce for 200 ms
-
-  float accel_magnitude =
-      sqrt(data.x * data.x + data.y * data.y + data.z * data.z);
-  float threshold = 1.0; // Adjust based on trial and testing
-
-  // Print the acceleration magnitude for debugging
-  //USBSerial.print("Accel Magnitude: ");
-  //USBSerial.println(accel_magnitude);
-
-  // Step detection with debouncing
-  if (accel_magnitude > threshold && last_accel <= threshold &&
-      (millis() - last_time > debounce_time)) {
-    last_accel = accel_magnitude;
-    last_time = millis();
-    return true; // Step detected
-  }
-
-  last_accel = accel_magnitude;
-  return false; // No step detected
-}
-
-void setup() {
-  USBSerial.begin(115200);
-  USBSerial.setDebugOutput(true);
-  while (!USBSerial) {
-    ;
-  }
-  USBSerial.print("Watchino Arduino Smart Watch v");
-  USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
-
-#ifdef GFX_EXTRA_PRE_INIT
-  GFX_EXTRA_PRE_INIT();
-#endif
-
-  // Init Display
-  if (!gfx->begin()) {
-    USBSerial.println("gfx->begin() failed!");
-  }
-  gfx->fillScreen(RGB565_BLACK);
-  // Initialize core UI layout
-  lv_init();
-
-  // Allocate frame buffers (Dual buffering addresses QSPI tearing/flickering)
-  static uint8_t buf1[BUF_SIZE * BYTE_PER_PIXEL];
-  static uint8_t buf2[BUF_SIZE * BYTE_PER_PIXEL];
-
-  // Target API setup for LVGL 9.5 display rendering engine
-  lv_display_t *disp = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
-  lv_display_set_buffers(disp, buf1, buf2, sizeof(buf1),
-                         LV_DISPLAY_RENDER_MODE_PARTIAL);
-  lv_display_set_flush_cb(disp, my_disp_flush);
-
-  create_clock_ui();
-
-  // Poll the RTC every 500ms natively via LVGL's internal thread clock
-  lv_timer_create(update_clock_ui_cb, 500, NULL);
+void init_bt_gadgetbridge()
+{
   // Initialize BLE
-  NimBLEDevice::init("Bangle.js C6"); // Name your device Bangle.js to trigger
+  NimBLEDevice::init(DEVICE_NAME); // Name your device Bangle.js to trigger
                                    // the Gadgetbridge profile
   NimBLEServer *pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
@@ -291,66 +356,114 @@ void setup() {
 
   NimBLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
       RX_CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+      NIMBLE_PROPERTY::WRITE); // | NIMBLE_PROPERTY::WRITE_NR
   pRxCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
+  USBSerial.println(pService->getUUID().toString().c_str());
+  USBSerial.println(pRxCharacteristic->getUUID().toString().c_str());
+  USBSerial.println(pTxCharacteristic->getUUID().toString().c_str());
 
-  pServer->start();
-  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+  if (!pServer->start())
+  {
+    USBSerial.println("ERROR: GATT server failed to start");
+  }
+
+  NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setName(DEVICE_NAME);
   pAdvertising->enableScanResponse(true);
-  pServer->getAdvertising()->start();
+  if (!pAdvertising->start())
+  {
+    USBSerial.println("ERROR: BLE advertising failed to start");
+  }
 
   USBSerial.println("BLE Watch Ready for Gadgetbridge Pairing...");
-
-  // Initialize and configure the QMI8658 through SensorLib.
-  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL)) {
-    USBSerial.println("Failed to find QMI8658 - check your wiring!");
-    while (true) {
-      delay(1000);
-    }
-  }
-  Wire.setClock(400000);
-
-  USBSerial.print("QMI8658 Chip ID: 0x");
-  USBSerial.println(qmi.getChipID(), HEX);
-
-  qmi.configAccelerometer(SensorQMI8658::ACC_RANGE_2G,
-                          SensorQMI8658::ACC_ODR_62_5Hz,
-                          SensorQMI8658::LPF_MODE_0);
-
-  qmi.enableAccelerometer();
-  USBSerial.println("Hardware Accelerometer engine enabled");
-
-  // TODO: setup touch screen here
-
-  delay(1000);
 }
 
-void loop() {
+void setup()
+{
+  USBSerial.begin(115200);
+  USBSerial.setDebugOutput(true);
+  while (!USBSerial)
+    ;
+  USBSerial.print("Watchino Arduino Smart Watch v");
+  USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
 
-  lv_timer_handler(); // Keep LVGL spinning
+#ifdef GFX_EXTRA_PRE_INIT
+  GFX_EXTRA_PRE_INIT();
+#endif
 
+  // Init Display
+  if (!gfx->begin())
+  {
+    USBSerial.println("gfx->begin() failed!");
+  }
+  gfx->fillScreen(RGB565_BLACK);
+  // Initialize core UI layout
+  lv_init();
+  lv_tick_set_cb([]() -> uint32_t
+                 { return millis(); });
 
-  if (qmi.getDataReady()) {
+  // Allocate frame buffers (Dual buffering addresses QSPI tearing/flickering)
+  static uint16_t buf1[BUF_SIZE * BYTE_PER_PIXEL];
+  static uint16_t buf2[BUF_SIZE * BYTE_PER_PIXEL];
+
+  // Target API setup for LVGL 9.5 display rendering engine
+  lv_display_t *disp = lv_display_create(LCD_WIDTH, LCD_HEIGHT);
+
+  lv_display_set_buffers(
+      disp,
+      buf1,
+      buf2,
+      sizeof(buf1),
+      LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  lv_display_set_flush_cb(disp, my_disp_flush);
+
+  // start RTC
+  init_hardware_rtc();
+  create_clock_ui();
+
+  // Poll the RTC every 500ms natively via LVGL's internal thread clock
+  lv_timer_create(update_clock_ui_cb, 500, NULL);
+  init_bt_gadgetbridge();
+  init_step_counter();
+
+  // TODO: setup touch screen here
+}
+
+void loop()
+{
+
+  // handle step counting
+  if (qmi.getDataReady())
+  {
     IMUdata accel;
-    if (qmi.getAccelerometer(accel.x, accel.y, accel.z)) {
+    if (qmi.getAccelerometer(accel.x, accel.y, accel.z))
+    {
       // USBSerial.printf("Accel: %.2f, %.2f, %.2f\n", accel.x, accel.y, accel.z);
-    
-    if (detectStep(accel)) {
-      USBSerial.println("Step Detected");
-      step_counter++;
-      USBSerial.print("Steps: ");
-      USBSerial.println(step_counter);
-    }
-  }
-    if (step_counter != last_step_counter) {
-      char step_str[16];
-      snprintf(step_str, sizeof(step_str), "Steps: %d", step_counter);
-      lv_label_set_text(step_label, step_str);
-      lv_obj_invalidate(step_label);
-      last_step_counter = step_counter;
-    }
-  }
 
-  delay(500);
+      if (detectStep(accel))
+      {
+        step_counter++;
+        USBSerial.print("Step Detected, steps: ");
+        USBSerial.println(step_counter);
+        USBSerial.print("Label text: ");
+
+        /* char step_str[24];
+        snprintf(step_str, sizeof(step_str), "Steps: %lu",
+                 static_cast<unsigned long>(step_counter));
+        lv_label_set_text(step_label, step_str); */
+        lv_label_set_text_fmt(
+            step_label,
+            "Steps: %lu",
+            static_cast<unsigned long>(step_counter));
+        USBSerial.println(lv_label_get_text(step_label));
+        // lv_obj_invalidate(step_label);
+        //  Diagnostic: render the invalidated area immediately.
+        // lv_refr_now(nullptr);
+      }
+    }
+  }
+  lv_timer_handler(); // Keep LVGL spinning
+  delay(16);
 }
