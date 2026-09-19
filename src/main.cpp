@@ -415,8 +415,7 @@ void setup()
 {
   USBSerial.begin(115200);
   USBSerial.setDebugOutput(true);
-  while (!USBSerial)
-    ;
+  delay(1000);
   USBSerial.print("Watchino Arduino Smart Watch v");
   USBSerial.println(WATCHINO_STRINGIFY(APP_VERSION));
 
