@@ -78,7 +78,7 @@ Arduino_GFX *gfx =
 void init_hardware_rtc()
 {
   // SensorLib initialization pattern
-  if (!rtc.begin(Wire, PCF85063_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
+  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL))
   {
     USBSerial.println("Error: SensorLib could not find PCF85063 chip!");
     return;
@@ -400,7 +400,7 @@ void init_bt_gadgetbridge()
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setName(DEVICE_NAME);
-  pAdvertising->setScanResponse(true);
+  pAdvertising->enableScanResponse(true);
   pAdvertising->setMinInterval(0x20); // 20ms
   pAdvertising->setMaxInterval(0x40); // 40ms
   if (!pAdvertising->start())
