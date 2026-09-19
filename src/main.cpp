@@ -9,6 +9,7 @@
 #include <Wire.h>
 #include <lvgl.h>
 #include <ArduinoJson.h>
+#include <Arduino_DriveBus_Library.h>
 
 // --custom lvgl font from Google Fonts--
 LV_FONT_DECLARE(tilt_neon_48_4bpp);
@@ -25,6 +26,17 @@ uint32_t step_counter = 0;
 
 HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
+
+// DriveBus Touch Driver instance
+std::shared_ptr<Arduino_IIC_DriveBus> i2c_bus =
+    std::make_shared<Arduino_HWIIC>(IIC_SDA, IIC_SCL, &Wire);
+Arduino_FT3x68 *touch_chip =
+    new Arduino_FT3x68(i2c_bus, FT3168_DEVICE_ADDRESS, TP_RESET, TP_INT);
+
+// Power and Timeout State Management
+bool screen_on = true;
+unsigned long last_activity_time = 0;
+const unsigned long SCREEN_TIMEOUT_MS = 15000;
 
 #define BYTE_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
 #define BUF_SIZE (LCD_WIDTH * 80)
@@ -448,43 +460,127 @@ void setup()
   init_bt_gadgetbridge();
   init_step_counter();
 
-  // TODO: setup touch screen here
+  // Initialize Touch Screen
+  if (touch_chip->begin())
+  {
+    USBSerial.println("FT3168 Touch controller initialized successfully.");
+    touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
+                                       Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
+  }
+  else
+  {
+    USBSerial.println("FT3168 Touch controller initialization failed!");
+  }
+
+  last_activity_time = millis();
+}
+
+void check_touch_input()
+{
+  String gesture = touch_chip->IIC_Read_Device_State(Arduino_IIC_Touch::Status_Information::TOUCH_GESTURE_ID);
+  double finger_num = touch_chip->IIC_Read_Device_Value(Arduino_IIC_Touch::Value_Information::TOUCH_FINGER_NUMBER);
+
+  static bool was_touching = false;
+  static unsigned long last_press_time = 0;
+  static uint8_t tap_count = 0;
+
+  bool is_touching = (finger_num > 0);
+  bool press_event = (is_touching && !was_touching);
+  was_touching = is_touching;
+
+  if (!screen_on)
+  {
+    // Screen is OFF: check for FT3168 gesture or press edge transitions for double tap wake-up
+    bool double_tap_detected = (gesture == "Double Click");
+
+    if (press_event)
+    {
+      unsigned long now = millis();
+      if (now - last_press_time < 500 && now - last_press_time > 50)
+      {
+        tap_count++;
+      }
+      else
+      {
+        tap_count = 1;
+      }
+      last_press_time = now;
+
+      if (tap_count >= 2)
+      {
+        double_tap_detected = true;
+        tap_count = 0;
+      }
+    }
+
+    if (double_tap_detected)
+    {
+      USBSerial.println("Double tap detected! Waking up screen.");
+      screen_on = true;
+      gfx->displayOn();
+      last_activity_time = millis();
+      tap_count = 0;
+      lv_obj_invalidate(lv_screen_active());
+      lv_refr_now(nullptr);
+    }
+  }
+  else
+  {
+    // Screen is ON: any touch input or gesture (including swipes) resets the 15s inactivity timer
+    if (is_touching || (gesture != "No Gesture" && gesture != "->Read TOUCH_GESTURE_ID fail" && gesture != "->Read FT3x68_RD_DEVICE_GESTUREID fail"))
+    {
+      last_activity_time = millis();
+    }
+
+    // Check timeout
+    if (millis() - last_activity_time >= SCREEN_TIMEOUT_MS)
+    {
+      USBSerial.println("15s inactivity timeout reached. Entering low power mode.");
+      screen_on = false;
+      gfx->displayOff();
+      tap_count = 0;
+    }
+  }
 }
 
 void loop()
 {
 
-  // handle step counting
+  // Continuously handle step counting regardless of screen state
   if (qmi.getDataReady())
   {
     IMUdata accel;
     if (qmi.getAccelerometer(accel.x, accel.y, accel.z))
     {
-      // USBSerial.printf("Accel: %.2f, %.2f, %.2f\n", accel.x, accel.y, accel.z);
-
       if (detectStep(accel))
       {
         step_counter++;
         USBSerial.print("Step Detected, steps: ");
         USBSerial.println(step_counter);
-        USBSerial.print("Label text: ");
 
-        /* char step_str[24];
-        snprintf(step_str, sizeof(step_str), "Steps: %lu",
-                 static_cast<unsigned long>(step_counter));
-        lv_label_set_text(step_label, step_str); */
-        lv_label_set_text_fmt(
-            step_label,
-            "Steps: %lu",
-            static_cast<unsigned long>(step_counter));
-        USBSerial.println(lv_label_get_text(step_label));
-        // lv_obj_invalidate(step_label);
-        //  Diagnostic: render the invalidated area immediately.
-        // lv_refr_now(nullptr);
+        if (step_label)
+        {
+          lv_label_set_text_fmt(
+              step_label,
+              "Steps: %lu",
+              static_cast<unsigned long>(step_counter));
+        }
       }
     }
   }
-  lv_timer_handler(); // Keep LVGL spinning
-  //16 = 62.5 Hz
-  delay(32);
+
+  // Handle touch input and screen timeout / wake state
+  check_touch_input();
+
+  // Handle LVGL UI rendering when screen is awake
+  if (screen_on)
+  {
+    lv_timer_handler();
+    delay(32);
+  }
+  else
+  {
+    // Low power mode: pause LVGL timer handler, delay to conserve power while polling sensors
+    delay(16);
+  }
 }
