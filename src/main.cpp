@@ -77,9 +77,8 @@ Arduino_GFX *gfx =
 // Init Hardware RTC via SensorLib ---
 void init_hardware_rtc()
 {
-
   // SensorLib initialization pattern
-  if (!rtc.begin(Wire, IIC_SDA, IIC_SCL))
+  if (!rtc.begin(Wire, PCF85063_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
   {
     USBSerial.println("Error: SensorLib could not find PCF85063 chip!");
     return;
@@ -298,12 +297,8 @@ void init_step_counter()
   if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
   {
     USBSerial.println("Failed to find QMI8658 - check your wiring!");
-    while (true)
-    {
-      delay(1000);
-    }
+    return;
   }
-  Wire.setClock(400000);
 
   USBSerial.print("QMI8658 Chip ID: 0x");
   USBSerial.println(qmi.getChipID(), HEX);
@@ -391,7 +386,7 @@ void init_bt_gadgetbridge()
 
   NimBLECharacteristic *pRxCharacteristic = pService->createCharacteristic(
       RX_CHARACTERISTIC_UUID,
-      NIMBLE_PROPERTY::WRITE); // | NIMBLE_PROPERTY::WRITE_NR
+      NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   pRxCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
   USBSerial.println(pService->getUUID().toString().c_str());
   USBSerial.println(pRxCharacteristic->getUUID().toString().c_str());
@@ -405,7 +400,9 @@ void init_bt_gadgetbridge()
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setName(DEVICE_NAME);
-  pAdvertising->enableScanResponse(true);
+  pAdvertising->setScanResponse(true);
+  pAdvertising->setMinInterval(0x20); // 20ms
+  pAdvertising->setMaxInterval(0x40); // 40ms
   if (!pAdvertising->start())
   {
     USBSerial.println("ERROR: BLE advertising failed to start");
@@ -458,20 +455,36 @@ void setup()
     lv_display_add_event_cb(disp, my_rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
 
+  i2c_mutex = xSemaphoreCreateMutex();
+
+  // Initialize Wire bus once with mutex protection
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+  {
+    Wire.begin(IIC_SDA, IIC_SCL, 400000);
+    xSemaphoreGive(i2c_mutex);
+  }
+
   // start RTC
-  init_hardware_rtc();
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+  {
+    init_hardware_rtc();
+    xSemaphoreGive(i2c_mutex);
+  }
+
   create_clock_ui();
 
   // Poll the RTC every 500ms natively via LVGL's internal thread clock
   lv_timer_create(update_clock_ui_cb, 500, NULL);
   init_bt_gadgetbridge();
 
-  i2c_mutex = xSemaphoreCreateMutex();
-
   // Configure Touch Interrupt Pin
   pinMode(TP_INT, INPUT_PULLUP);
 
-  init_step_counter();
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
+  {
+    init_step_counter();
+    xSemaphoreGive(i2c_mutex);
+  }
 
   // Initialize Touch Screen using global Wire bus
   i2c_bus = std::make_shared<Arduino_HWIIC>(IIC_SDA, IIC_SCL, &Wire);
@@ -479,10 +492,16 @@ void setup()
 
   if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
   {
-    // Note: Arduino_HWIIC should not re-call Wire.begin() since init_hardware_rtc/Wire is already initialized
-    touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
-                                       Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
-    USBSerial.println("FT3168 Touch controller initialized successfully.");
+    if (touch_chip->begin())
+    {
+      touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
+                                         Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
+      USBSerial.println("FT3168 Touch controller initialized successfully.");
+    }
+    else
+    {
+      USBSerial.println("FT3168 Touch controller begin failed!");
+    }
     xSemaphoreGive(i2c_mutex);
   }
 
