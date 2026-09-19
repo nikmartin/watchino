@@ -28,10 +28,9 @@ HWCDC USBSerial;
 SensorPCF85063 rtc; // SensorLib RTC driver instance
 
 // DriveBus Touch Driver instance
-std::shared_ptr<Arduino_IIC_DriveBus> i2c_bus =
-    std::make_shared<Arduino_HWIIC>(IIC_SDA, IIC_SCL, &Wire);
-Arduino_FT3x68 *touch_chip =
-    new Arduino_FT3x68(i2c_bus, FT3168_DEVICE_ADDRESS, TP_RESET, TP_INT);
+std::shared_ptr<Arduino_IIC_DriveBus> i2c_bus;
+Arduino_FT3x68 *touch_chip = nullptr;
+SemaphoreHandle_t i2c_mutex = NULL;
 
 // Power and Timeout State Management
 bool screen_on = true;
@@ -95,8 +94,16 @@ void update_clock_ui_cb(lv_timer_t *timer)
   if (!time_label)
     return;
 
-  // Grab time from hardware registers
-  RTC_DateTime now = rtc.getDateTime();
+  RTC_DateTime now;
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
+  {
+    now = rtc.getDateTime();
+    xSemaphoreGive(i2c_mutex);
+  }
+  else
+  {
+    return;
+  }
 
   char time_str[12];
   // Formats text cleanly to show Hours:Minutes:Seconds (e.g., 14:05:32)
@@ -458,18 +465,25 @@ void setup()
   // Poll the RTC every 500ms natively via LVGL's internal thread clock
   lv_timer_create(update_clock_ui_cb, 500, NULL);
   init_bt_gadgetbridge();
+
+  i2c_mutex = xSemaphoreCreateMutex();
+
+  // Configure Touch Interrupt Pin
+  pinMode(TP_INT, INPUT_PULLUP);
+
   init_step_counter();
 
-  // Initialize Touch Screen
-  if (touch_chip->begin())
+  // Initialize Touch Screen using global Wire bus
+  i2c_bus = std::make_shared<Arduino_HWIIC>(IIC_SDA, IIC_SCL, &Wire);
+  touch_chip = new Arduino_FT3x68(i2c_bus, FT3168_DEVICE_ADDRESS, TP_RESET, TP_INT);
+
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
   {
-    USBSerial.println("FT3168 Touch controller initialized successfully.");
+    // Note: Arduino_HWIIC should not re-call Wire.begin() since init_hardware_rtc/Wire is already initialized
     touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
                                        Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
-  }
-  else
-  {
-    USBSerial.println("FT3168 Touch controller initialization failed!");
+    USBSerial.println("FT3168 Touch controller initialized successfully.");
+    xSemaphoreGive(i2c_mutex);
   }
 
   last_activity_time = millis();
@@ -477,8 +491,32 @@ void setup()
 
 void check_touch_input()
 {
+  if (!touch_chip) return;
+
+  // Poll I2C touch chip only when touch interrupt pin (TP_INT) is active (LOW)
+  // or rate-limit when screen is ON
+  bool tp_int_active = (digitalRead(TP_INT) == LOW);
+  if (!tp_int_active)
+  {
+    // If screen is awake and timeout is reached, transition to screen off
+    if (screen_on && (millis() - last_activity_time >= SCREEN_TIMEOUT_MS))
+    {
+      USBSerial.println("15s inactivity timeout reached. Entering low power mode.");
+      screen_on = false;
+      gfx->displayOff();
+    }
+    return;
+  }
+
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(10)) != pdTRUE)
+  {
+    return;
+  }
+
   String gesture = touch_chip->IIC_Read_Device_State(Arduino_IIC_Touch::Status_Information::TOUCH_GESTURE_ID);
   double finger_num = touch_chip->IIC_Read_Device_Value(Arduino_IIC_Touch::Value_Information::TOUCH_FINGER_NUMBER);
+
+  xSemaphoreGive(i2c_mutex);
 
   static bool was_touching = false;
   static unsigned long last_press_time = 0;
@@ -547,10 +585,18 @@ void loop()
 {
 
   // Continuously handle step counting regardless of screen state
-  if (qmi.getDataReady())
+  if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
   {
+    bool data_ready = qmi.getDataReady();
     IMUdata accel;
-    if (qmi.getAccelerometer(accel.x, accel.y, accel.z))
+    bool got_accel = false;
+    if (data_ready)
+    {
+      got_accel = qmi.getAccelerometer(accel.x, accel.y, accel.z);
+    }
+    xSemaphoreGive(i2c_mutex);
+
+    if (data_ready && got_accel)
     {
       if (detectStep(accel))
       {
