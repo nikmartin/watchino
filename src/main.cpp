@@ -327,6 +327,21 @@ void create_clock_ui()
   lv_label_set_text(step_label, "Steps: 0");
 }
 
+// LVGL v9 Rounder Callback for CO5300 Display Alignment
+void my_rounder_event_cb(lv_event_t * e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_INVALIDATE_AREA) {
+        // Retrieve the area being updated
+        lv_area_t * area = (lv_area_t *)lv_event_get_param(e);
+        if (area) {
+            area->x1 = area->x1 & (~0x1); /* Round down to even */
+            area->y1 = area->y1 & (~0x1); /* Round down to even */
+            area->x2 = area->x2 | 0x1;    /* Round up to odd */
+            area->y2 = area->y2 | 0x1;    /* Round up to odd */
+        }
+    }
+}
+
 // LVGL 9.5 Display Flush Callback using Arduino_GFX draw API
 
 void my_disp_flush(lv_display_t *display, const lv_area_t *area,
@@ -334,6 +349,7 @@ void my_disp_flush(lv_display_t *display, const lv_area_t *area,
 {
   int32_t w = (area->x2 - area->x1 + 1);
   int32_t h = (area->y2 - area->y1 + 1);
+
 
   // Push the native LVGL 16-bit RGB pixels via standard Arduino_GFX DMA burst
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)px_map, w, h);
@@ -418,6 +434,10 @@ void setup()
       LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   lv_display_set_flush_cb(disp, my_disp_flush);
+
+  // THE CO5300 FIX: Register the rounder event callback to the display
+    lv_display_add_event_cb(disp, my_rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+
 
   // start RTC
   init_hardware_rtc();
