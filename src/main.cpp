@@ -38,7 +38,7 @@ unsigned long last_activity_time = 0;
 const unsigned long SCREEN_TIMEOUT_MS = 15000;
 
 #define BYTE_PER_PIXEL (LV_COLOR_FORMAT_GET_SIZE(LV_COLOR_FORMAT_RGB565))
-#define BUF_SIZE (LCD_WIDTH * 80)
+#define BUF_SIZE (LCD_WIDTH * 40)
 
 // LVGL UI Objects
 lv_obj_t *time_label;
@@ -168,17 +168,80 @@ void parse_gadgetbridge_json(const String &json_text)
   USBSerial.printf("SensorLib RTC synced to epoch: %lld\n", epoch);
 }
 
+// Gadgetbridge's real Bangle.js protocol doesn't send time as a GB(...) JSON
+// packet - it sends raw Espruino eval text: "setTime(<epoch>);E.setTimeZone(<tz>);...\n"
+// where <epoch> is UTC seconds and <tz> is the local UTC offset in hours (can be
+// fractional, e.g. 5.5). BLE MTU fragmentation can split setTime(...) and
+// E.setTimeZone(...) across separate onWrite calls, so wait for the trailing '\n'
+// (the whole command is written in one go) before parsing either value.
+bool parse_gadgetbridge_settime(String &buffer)
+{
+  int newline_index = buffer.indexOf('\n');
+  if (newline_index < 0)
+    return false; // command not fully received yet
+
+  int time_index = buffer.indexOf("setTime(");
+  if (time_index < 0 || time_index > newline_index)
+    return false; // this line isn't a setTime command; let the GB(...) parser handle it
+
+  int value_start = time_index + strlen("setTime(");
+  int value_end = buffer.indexOf(')', value_start);
+  time_t epoch = (value_end >= 0 && value_end < newline_index)
+                     ? (time_t)buffer.substring(value_start, value_end).toInt()
+                     : 0;
+
+  double tz_hours = 0.0;
+  int tz_index = buffer.indexOf("setTimeZone(", value_end);
+  if (tz_index >= 0 && tz_index < newline_index)
+  {
+    int tz_value_start = tz_index + strlen("setTimeZone(");
+    int tz_value_end = buffer.indexOf(')', tz_value_start);
+    if (tz_value_end >= 0 && tz_value_end < newline_index)
+      tz_hours = buffer.substring(tz_value_start, tz_value_end).toDouble();
+  }
+
+  if (epoch > 0)
+  {
+    time_t local_epoch = epoch + (time_t)lround(tz_hours * 3600.0);
+    struct tm *timeinfo = gmtime(&local_epoch);
+    if (timeinfo)
+    {
+      current_year = timeinfo->tm_year + 1900;
+      current_month = timeinfo->tm_mon + 1;
+      current_date = timeinfo->tm_mday;
+      current_hour = timeinfo->tm_hour;
+      current_minute = timeinfo->tm_min;
+      current_second = timeinfo->tm_sec;
+      rtc.setDateTime(current_year, current_month, current_date, current_hour,
+                      current_minute, current_second);
+      time_updated = true;
+      USBSerial.printf("RTC synced: epoch=%ld tz=%.2fh -> %04d-%02d-%02d %02d:%02d:%02d\n",
+                        (long)epoch, tz_hours, current_year, current_month, current_date,
+                        current_hour, current_minute, current_second);
+    }
+  }
+
+  buffer.remove(0, newline_index + 1);
+  return true;
+}
+
 void process_gadgetbridge_bytes(const std::string &fragment)
 {
   for (unsigned char byte : fragment)
     gadgetbridge_buffer += static_cast<char>(byte);
+
+  while (parse_gadgetbridge_settime(gadgetbridge_buffer))
+    ;
 
   while (true)
   {
     int start = gadgetbridge_buffer.indexOf("GB(");
     if (start < 0)
     {
-      gadgetbridge_buffer = "";
+      // Nothing recognizable yet; keep buffering (a pending setTime(...) line
+      // may still be arriving in a later BLE write) but cap growth from garbage.
+      if (gadgetbridge_buffer.length() > 2048)
+        gadgetbridge_buffer = "";
       return;
     }
 
@@ -294,8 +357,9 @@ bool detectStep(const IMUdata data)
 }
 void init_step_counter()
 {
-  // Initialize and configure the QMI8658 through SensorLib.
-  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
+  // Wire is already begun with IIC_SDA/IIC_SCL by init_hardware_rtc(); omit the
+  // pins here so SensorLib doesn't call Wire.setPins() on an already-active bus.
+  if (!qmi.begin(Wire, QMI8658_L_SLAVE_ADDRESS))
   {
     USBSerial.println("Failed to find QMI8658 - check your wiring!");
     while (true)
@@ -402,10 +466,14 @@ void init_bt_gadgetbridge()
     USBSerial.println("ERROR: GATT server failed to start");
   }
 
+  // Name + flags (17 bytes) must stay in the primary packet so Gadgetbridge can
+  // discover the device by name; the 128-bit service UUID (18 bytes) would push
+  // the combined payload past the 31-byte legacy advertising limit, so it is
+  // placed in the scan response instead.
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
+  //pAdvertising->setName(DEVICE_NAME);
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setName(DEVICE_NAME);
-  pAdvertising->enableScanResponse(true);
+  //pAdvertising->enableScanResponse(true);
   if (!pAdvertising->start())
   {
     USBSerial.println("ERROR: BLE advertising failed to start");
@@ -455,7 +523,7 @@ void setup()
   lv_display_set_flush_cb(disp, my_disp_flush);
 
   // THE CO5300 FIX: Register the rounder event callback to the display
-    lv_display_add_event_cb(disp, my_rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+  lv_display_add_event_cb(disp, my_rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
 
 
   // start RTC
@@ -479,10 +547,18 @@ void setup()
 
   if (i2c_mutex && xSemaphoreTake(i2c_mutex, pdMS_TO_TICKS(100)) == pdTRUE)
   {
-    // Note: Arduino_HWIIC should not re-call Wire.begin() since init_hardware_rtc/Wire is already initialized
-    touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
-                                       Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
-    USBSerial.println("FT3168 Touch controller initialized successfully.");
+    // begin() resets the chip (TP_RESET) and runs its required init sequence;
+    // without it, writes below NACK because the FT3168 is never taken out of reset.
+    if (touch_chip->begin())
+    {
+      touch_chip->IIC_Write_Device_State(Arduino_IIC_Touch::Device::TOUCH_GESTUREID_MODE,
+                                         Arduino_IIC_Touch::Device_State::TOUCH_DEVICE_ON);
+      USBSerial.println("FT3168 Touch controller initialized successfully.");
+    }
+    else
+    {
+      USBSerial.println("ERROR: FT3168 touch controller failed to initialize.");
+    }
     xSemaphoreGive(i2c_mutex);
   }
 
